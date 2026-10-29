@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>영어 단어 퀴즈</title>
+  <!-- Supabase JavaScript v2 (CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --card: #ffffff;
+      --text: #1f2933;
+      --muted: #6b7280;
+      --accent: #2563eb;
+      --correct: #16a34a;
+      --correct-bg: #dcfce7;
+      --wrong: #dc2626;
+      --wrong-bg: #fee2e2;
+      --border: #d1d5db;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    }
+    .card {
+      width: 100%;
+      max-width: 480px;
+      background: var(--card);
+      border-radius: 16px;
+      padding: 28px 24px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+    }
+    h1 { margin: 0 0 4px; font-size: 1.3rem; }
+    .progress { margin: 0 0 20px; color: var(--muted); font-size: 0.9rem; }
+    .prompt { margin: 0 0 8px; color: var(--muted); }
+    .word { margin: 0 0 20px; font-size: 2rem; letter-spacing: 0.02em; }
+    .choices { display: grid; gap: 10px; }
+    .choice {
+      padding: 14px 16px;
+      font-size: 1rem;
+      text-align: left;
+      border: 2px solid var(--border);
+      border-radius: 10px;
+      background: var(--card);
+      color: var(--text);
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .choice:hover:not(:disabled) { border-color: var(--accent); }
+    .choice:disabled { cursor: default; }
+    .choice.correct { border-color: var(--correct); background: var(--correct-bg); }
+    .choice.wrong { border-color: var(--wrong); background: var(--wrong-bg); }
+    .feedback { min-height: 1.5em; margin: 16px 0 4px; font-weight: 600; }
+    .feedback.ok { color: var(--correct); }
+    .feedback.ng { color: var(--wrong); }
+    .save-status { min-height: 1.2em; margin: 0 0 16px; font-size: 0.85rem; color: var(--muted); }
+    .save-status.ok { color: var(--correct); }
+    .save-status.ng { color: var(--wrong); }
+    .primary {
+      width: 100%;
+      padding: 14px;
+      font-size: 1rem;
+      font-weight: 600;
+      border: none;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+    }
+    .score { font-size: 2.2rem; font-weight: 700; margin: 8px 0 12px; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>영어 단어 퀴즈</h1>
+    <p id="progress" class="progress"></p>
+
+    <!-- 문제 화면 -->
+    <section id="quiz-view">
+      <p class="prompt">다음 단어의 뜻으로 알맞은 것을 고르세요.</p>
+      <h2 id="word" class="word"></h2>
+      <div id="choices" class="choices"></div>
+      <p id="feedback" class="feedback" aria-live="polite"></p>
+      <p id="save-status" class="save-status" aria-live="polite"></p>
+      <button id="next-btn" class="primary" hidden>다음 문제</button>
+    </section>
+
+    <!-- 결과 화면 -->
+    <section id="result-view" hidden>
+      <h2>결과</h2>
+      <p id="score" class="score"></p>
+      <p id="save-summary" class="save-status"></p>
+      <button id="restart-btn" class="primary">다시 풀기</button>
+    </section>
+  </main>
+
+  <script>
+    // ===== 여기 두 값만 내 프로젝트 값으로 바꾸세요 =====
+    const SUPABASE_URL = "YOUR_SUPABASE_URL";
+    const SUPABASE_PUBLISHABLE_KEY = "YOUR_PUBLISHABLE_KEY";
+    // ====================================================
+
+    const QUESTIONS = [
+      { no: 1, word: "abundant",  choices: ["조용한", "풍부한", "위험한", "느린"],       answer: "풍부한" },
+      { no: 2, word: "reluctant", choices: ["주저하는", "열정적인", "정확한", "부지런한"], answer: "주저하는" },
+      { no: 3, word: "brief",     choices: ["강력한", "평범한", "짧은", "불규칙한"],     answer: "짧은" }
+    ];
+
+    // Supabase 클라이언트 생성 (실패해도 퀴즈는 동작)
+    let db = null;
+    try {
+      if (window.supabase && SUPABASE_URL.startsWith("http")) {
+        db = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+      }
+    } catch (err) {
+      console.error("Supabase 클라이언트 생성 실패:", err);
+      db = null;
+    }
+
+    // 화면 요소
+    const $progress    = document.getElementById("progress");
+    const $quizView    = document.getElementById("quiz-view");
+    const $resultView  = document.getElementById("result-view");
+    const $word        = document.getElementById("word");
+    const $choices     = document.getElementById("choices");
+    const $feedback    = document.getElementById("feedback");
+    const $saveStatus  = document.getElementById("save-status");
+    const $nextBtn     = document.getElementById("next-btn");
+    const $score       = document.getElementById("score");
+    const $saveSummary = document.getElementById("save-summary");
+    const $restartBtn  = document.getElementById("restart-btn");
+
+    // 퀴즈 상태
+    let attemptId = null;   // 퀴즈 1회 응시를 묶는 번호
+    let current = 0;        // 현재 문제 인덱스 (0~2)
+    let score = 0;
+    let answered = false;   // 현재 문제에 이미 답했는지
+    let startTime = 0;      // 문제 제시 시각 (performance.now)
+    let saveResults = [];   // 문제별 저장 상태: "pending" | "ok" | "fail"
+
+    function startQuiz() {
+      attemptId = crypto.randomUUID();  // 새 응시마다 새 번호
+      current = 0;
+      score = 0;
+      saveResults = [];
+      $resultView.hidden = true;
+      $quizView.hidden = false;
+      renderQuestion();
+    }
+
+    function renderQuestion() {
+      const q = QUESTIONS[current];
+      answered = false;
+
+      $progress.textContent = `문제 ${current + 1} / ${QUESTIONS.length}`;
+      $word.textContent = q.word;
+      $feedback.textContent = "";
+      $feedback.className = "feedback";
+      $saveStatus.textContent = "";
+      $saveStatus.className = "save-status";
+      $nextBtn.hidden = true;
+
+      $choices.innerHTML = "";
+      q.choices.forEach((choice) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "choice";
+        btn.textContent = choice;
+        btn.addEventListener("click", () => handleChoice(choice));
+        $choices.appendChild(btn);
+      });
+
+      // 문제가 화면에 제시된 시점부터 시간 측정 시작
+      startTime = performance.now();
+    }
+
+    function handleChoice(choice) {
+      if (answered) return;  // 한 문제에 한 번만 선택
+      answered = true;
+
+      const responseTimeMs = Math.max(0, Math.round(performance.now() - startTime));
+      const q = QUESTIONS[current];
+      const isCorrect = choice === q.answer;
+      if (isCorrect) score++;
+
+      // 보기 잠그고 정답/오답 표시
+      [...$choices.children].forEach((btn) => {
+        btn.disabled = true;
+        if (btn.textContent === q.answer) btn.classList.add("correct");
+        else if (btn.textContent === choice) btn.classList.add("wrong");
+      });
+
+      // 즉시 피드백
+      if (isCorrect) {
+        $feedback.textContent = "정답입니다!";
+        $feedback.className = "feedback ok";
+      } else {
+        $feedback.textContent = `오답입니다. 정답은 '${q.answer}'입니다.`;
+        $feedback.className = "feedback ng";
+      }
+
+      $nextBtn.textContent = current === QUESTIONS.length - 1 ? "결과 보기" : "다음 문제";
+      $nextBtn.hidden = false;
+
+      // 저장은 기다리지 않고 진행 (실패해도 퀴즈 계속)
+      saveAnswer({
+        attempt_id: attemptId,
+        question_no: q.no,
+        english_word: q.word,
+        chosen_answer: choice,
+        is_correct: isCorrect,
+        response_time_ms: responseTimeMs
+      });
+    }
+
+    async function saveAnswer(row) {
+      const idx = row.question_no - 1;
+      const thisAttempt = row.attempt_id;
+      saveResults[idx] = "pending";
+      setSaveStatus(row, "저장 중…", "");
+
+      let ok = false;
+      if (!db) {
+        console.warn("Supabase 설정이 없어 저장하지 않았습니다.");
+      } else {
+        try {
+          // INSERT 한 번만 실행 (.select() 사용 안 함)
+          const { error } = await db.from("quiz_answers").insert(row);
+          if (error) console.error("저장 실패:", error);
+          else ok = true;
+        } catch (err) {
+          console.error("저장 중 오류:", err);
+        }
+      }
+
+      if (thisAttempt !== attemptId) return;  // 이미 다시 풀기를 누른 경우 무시
+      saveResults[idx] = ok ? "ok" : "fail";
+      setSaveStatus(row, ok ? "응답이 저장되었습니다." : "응답 저장에 실패했습니다. 퀴즈는 계속 진행할 수 있어요.", ok ? "ok" : "ng");
+      updateSaveSummary();
+    }
+
+    // 현재 보고 있는 문제의 저장 상태만 화면에 표시
+    function setSaveStatus(row, text, cls) {
+      if (row.attempt_id === attemptId && current === row.question_no - 1 && !$quizView.hidden) {
+        $saveStatus.textContent = text;
+        $saveStatus.className = "save-status " + cls;
+      }
+    }
+
+    function showResult() {
+      $quizView.hidden = true;
+      $resultView.hidden = false;
+      $progress.textContent = "퀴즈 완료";
+      $score.textContent = `${score} / ${QUESTIONS.length}점`;
+      updateSaveSummary();
+    }
+
+    function updateSaveSummary() {
+      if ($resultView.hidden) return;
+      const okCount = saveResults.filter((s) => s === "ok").length;
+      const failCount = saveResults.filter((s) => s === "fail").length;
+      const pending = saveResults.filter((s) => s === "pending").length;
+
+      if (pending > 0) {
+        $saveSummary.textContent = `응답 저장 중… (${okCount}/${QUESTIONS.length} 완료)`;
+        $saveSummary.className = "save-status";
+      } else if (failCount === 0) {
+        $saveSummary.textContent = `응답 ${okCount}개가 모두 저장되었습니다.`;
+        $saveSummary.className = "save-status ok";
+      } else {
+        $saveSummary.textContent = `저장 성공 ${okCount}개, 실패 ${failCount}개`;
+        $saveSummary.className = "save-status ng";
+      }
+    }
+
+    $nextBtn.addEventListener("click", () => {
+      current++;
+      if (current < QUESTIONS.length) renderQuestion();
+      else showResult();
+    });
+
+    $restartBtn.addEventListener("click", startQuiz);
+
+    startQuiz();
+  </script>
+</body>
+</html>
